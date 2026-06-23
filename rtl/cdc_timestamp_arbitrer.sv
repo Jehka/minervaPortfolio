@@ -11,7 +11,7 @@
 //   - Fully synthesized and constrained for enterprise verification.
 // ==============================================================================
 
-module sensor_acquisition_master #(
+module cdc_timestamp_arbitrer #(
     parameter int NUM_SOURCES  = 4,
     parameter int DATA_WIDTH   = 64,  
     parameter int TS_WIDTH     = 64,

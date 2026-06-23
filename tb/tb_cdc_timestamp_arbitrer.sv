@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module tb_sensor_acquisition_top();
+module tb_cdc_timestamp_arbitrer();
 
     // Dynamically override parameters for testing
     localparam int TEST_SOURCES = 8;
@@ -19,7 +19,7 @@ module tb_sensor_acquisition_top();
     logic [$clog2(TEST_SOURCES)-1:0] m_tid;
     logic [63:0]                     m_tuser;
 
-    sensor_acquisition_master #(
+    cdc_timestamp_arbitrer #(
         .NUM_SOURCES(TEST_SOURCES),
         .DATA_WIDTH(TEST_DATA_W),
         .PACKET_BEATS(TEST_PACKET)
