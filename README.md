@@ -1,302 +1,293 @@
 # Heterogeneous CDC Arbiter & Timestamp Engine
 
-A production-style FPGA subsystem that arbitrates multiple heterogeneous AXI4-Stream sensor sources, captures deterministic acquisition timestamps, and safely transfers sensor packets across asynchronous clock domains using a formally-safe CDC architecture.
+A synthesizable SystemVerilog IP core that arbitrates **N asynchronous AXI4-Stream sensor sources** through a fair round-robin scheduler, appends a hardware-captured acquisition timestamp to every sample, and safely crosses an asynchronous clock domain boundary via Xilinx XPM BRAM FIFO. The output is a standard AXI4-Stream master with packetized `TLAST` boundaries for direct DMA consumption.
 
-The design targets mixed-signal acquisition pipelines where multiple sensors operate concurrently and data must be transferred into a high-speed processing or DMA domain without introducing timestamp drift, starvation, or clock-domain crossing failures.
-
----
-
-## Key Features
-
-### Strict Round-Robin Arbitration
-
-The arbiter services multiple sensor channels using a strict round-robin scheduling algorithm.
-
-Unlike fixed-priority arbiters, every requesting source is guaranteed access to the shared output path, preventing starvation and ensuring deterministic bandwidth allocation across channels.
-
-### Hardware Acquisition Timestamping
-
-Each sensor source receives a hardware timestamp captured on the rising edge of its `tvalid` signal.
-
-This ensures timestamps represent the actual acquisition event rather than the later arbitration or transmission time.
-
-### Asynchronous Clock Domain Crossing
-
-Sensor acquisition and system processing often operate on independent clocks.
-
-The design safely transfers packets between clock domains through a Xilinx XPM asynchronous FIFO utilizing Gray-coded synchronization and configurable synchronization stages.
-
-### Packetized DMA Streaming
-
-The module automatically generates AXI-style packet boundaries using programmable beat counters and asserts `TLAST` after a configurable number of successful transfers.
-
-This enables direct integration with AXI DMA engines and downstream packet processors.
-
-### Embedded Protocol Assertions
-
-SystemVerilog Assertions (SVA) continuously verify critical protocol assumptions during simulation.
-
-Assertions check:
-
-* Valid requests exist before arbitration
-* Granted channels actually requested service
-* Internal AXI handshake behavior remains legal
+Verified in Vivado 2025.1 simulation and synthesized clean against `xc7z020clg484-1` (Zedboard).
 
 ---
 
-## System Architecture
+## Architectural Block Diagram
 
-```text
-                   WRITE DOMAIN (wclk)
- ┌────────────────────────────────────────────────────┐
+![Architectural Block Diagram](docs/cdc_arbitrer.png)
 
- Sensor 0 ─┐
- Sensor 1 ─┼─────► Round Robin Arbiter ─────┐
- Sensor 2 ─┤                               │
- Sensor N ─┘                               │
-
-                 Timestamp Capture Engine
-                           │
-                           ▼
-               {TLAST, TS, ID, DATA}
-                           │
-                           ▼
-                 XPM Async FIFO (CDC)
-                           │
-
- └────────────────────────────────────────────────────┘
-
-
-                    READ DOMAIN (rclk)
-
-                           │
-                           ▼
-
-                AXI-Stream DMA Interface
-
-                m_tvalid
-                m_tdata
-                m_tid
-                m_tuser
-                m_tlast
-```
+The design is split across two independent clock domains. The write domain (`wclk`) handles sensor acquisition, arbitration, and timestamping. The read domain (`rclk`) handles DMA-facing AXI4-Stream output. The XPM async FIFO is the **only CDC boundary** in the design.
 
 ---
 
-## Data Packet Format
+## Data Lifecycle
 
-Each transaction written into the CDC FIFO contains:
+![Data Lifecycle Walkthrough](docs/data_lifecycle.png)
 
-```text
-+-----------------------------------------------------+
-| TLAST | TIMESTAMP | SOURCE_ID | SENSOR_DATA |
-+-----------------------------------------------------+
-```
+A single sample travels through four phases:
 
-| Field       | Description                       |
-| ----------- | --------------------------------- |
-| TLAST       | Packet boundary indicator         |
-| TIMESTAMP   | Acquisition timestamp             |
-| SOURCE_ID   | Channel that generated the sample |
-| SENSOR_DATA | Original sensor payload           |
+**1 — Acquisition (wclk):** A sensor asserts `s_tvalid[i]`. On that rising edge the Timestamp Engine captures `current_time` into a per-source register `capture_ts[i]`. This is the source-of-truth timestamp for the sample's age — captured at acquisition, not at arbitration.
+
+**2 — Arbitration (wclk):** The Round-Robin Arbiter inspects all `s_tvalid` lines and selects the next requesting source after `last_grant_id`, guaranteeing no starvation. It forwards `{ID, DATA, capture_ts[i]}` toward the FIFO and asserts `s_tready` only for the granted source.
+
+**3 — CDC Crossing:** The bundle `{TLAST, TIMESTAMP, SOURCE_ID, DATA}` is written into `xpm_fifo_async` on `wclk`. The XPM macro uses Gray-coded read/write pointers with 2-stage synchronizers to cross safely to `rclk`.
+
+**4 — Extraction (rclk):** The output controller monitors `fifo_empty` and `m_tready`. When the FIFO has data and the downstream is ready it issues `rd_en`, unbundles `fifo_dout`, and presents a standard AXI4-Stream handshake.
 
 ---
 
-## Timestamp Engine
+## Waveform — One Transaction
 
-A free-running hardware counter increments every write-domain clock cycle.
+![Waveform: One Transaction](docs/handshake.png)
 
-When a sensor asserts `s_tvalid`:
-
-```verilog
-if (s_tvalid[i] && !s_tvalid_q[i])
-    capture_ts[i] <= current_time;
-```
-
-The timestamp is captured immediately and stored until arbitration occurs.
-
-This prevents arbitration latency from corrupting acquisition timing information.
+- **Segment A (wclk):** Sensor 1 asserts valid. The arbiter selects ID=1, `arb_handshake` pulses, `last_grant_id` advances 0 → 1, `wr_en` fires.
+- **Segment B (CDC):** `fifo_din` carries `{0, 0x0000_0000_003A, 1, 0xAAAA_BBBB_CCCC_DDDD}`. Several `rclk` cycles later `rd_en` asserts — this gap is the asynchronous CDC latency.
+- **Segment C (rclk):** `m_tvalid` rises, outputs stable. `m_tlast` fires on the Nth handshake.
 
 ---
 
-## Arbitration Strategy
+## Simulation Waveform — Vivado xsim
 
-The arbiter maintains a record of the last granted source.
+![Simulation Waveform](docs/sim_waveform.png)
 
-For every successful transfer:
-
-1. Search begins at the next source index.
-2. The first requesting source is selected.
-3. The grant pointer advances.
-4. Fairness is preserved.
-
-Example:
-
-```text
-Sources requesting:
-
-0 1 2 3
-
-Grant sequence:
-
-0 → 1 → 2 → 3 → 0 → 1 ...
-```
-
-No source can permanently monopolize the output channel.
+`s_tready` cycling one-hot across sources confirms round-robin arbitration. `write_be...nt` counter incrementing confirms FIFO write activity across the CDC boundary. `m_tvalid` is low in this early capture window (70–190ns) — correct behavior, CDC latency has not yet resolved on the read domain.
 
 ---
 
-## Clock Domain Crossing
+## Synthesis Results — xc7z020clg484-1 (Zedboard), Vivado 2025.1
 
-The CDC boundary is implemented using:
+| Resource | Used | Available | Utilization |
+|---|---|---|---|
+| LUTs | 321 | 53,200 | 0.6% |
+| Flip-Flops | 365 | 106,400 | 0.3% |
+| RAMB36 | 4 | 140 | 2.9% |
+| DSPs | 0 | 220 | 0% |
+| BUFGs | 2 | 32 | 6.3% |
 
-```verilog
-xpm_fifo_async
-```
+Synthesis completed with **0 errors, 0 critical warnings**. Warnings are unconnected optional XPM output ports (`prog_full`, `overflow`, etc.) — expected and benign.
 
-Configuration:
-
-* Block RAM implementation
-* First Word Fall Through (FWFT)
-* Two-stage synchronizers
-* Independent read/write clocks
-
-Benefits:
-
-* Metastability protection
-* Independent clock frequencies
-* High throughput
-* Vendor-validated implementation
+> `cdc_arbiter` is instantiated as soft IP inside a Zynq PS/PL block design for implementation. Standalone implementation is not applicable — the 401 top-level ports exceed physical IO count by design, as all ports connect to PS fabric, not physical pins.
 
 ---
 
-## TLAST Packet Generation
+## Transaction Format (Across FIFO)
 
-Packet boundaries are generated using successful write handshakes.
-
-```verilog
-if (beat_count == PACKET_BEATS - 1)
-```
-
-This approach ensures packet length remains correct even under FIFO backpressure conditions.
-
-Default:
-
-```text
-PACKET_BEATS = 256
-```
-
-Result:
-
-```text
-Beat 255 -> TLAST asserted
-Beat 256 -> Counter resets
-```
+| Field | Width | Description |
+|---|---|---|
+| `TLAST` | 1 | Packet boundary indicator |
+| `TIMESTAMP` | `TS_WIDTH` | Acquisition timestamp (captured at `s_tvalid` rising edge) |
+| `SOURCE_ID` | `ID_WIDTH` | Source channel index |
+| `DATA` | `DATA_WIDTH` | Sensor payload |
+| **Total** | `1 + TS_WIDTH + ID_WIDTH + DATA_WIDTH` | |
 
 ---
 
-## Verification Strategy
+## File Structure
 
-The design includes a self-checking SystemVerilog testbench.
-
-### Test Configuration
-
-| Parameter     | Value   |
-| ------------- | ------- |
-| Sources       | 8       |
-| Data Width    | 64      |
-| Packet Length | 16      |
-| Write Clock   | 100 MHz |
-| Read Clock    | 25 MHz  |
-
-### Verification Coverage
-
-* Multi-source arbitration
-* Timestamp propagation
-* CDC FIFO operation
-* Packet boundary generation
-* Backpressure behavior
-* Data integrity checking
-
-The testbench automatically:
-
-1. Records every accepted input transaction.
-2. Tracks expected packet boundaries.
-3. Compares FIFO outputs against expected values.
-4. Reports mismatches.
-5. Generates pass/fail status.
-
----
-
-## Simulation Results
-
-Successful execution produces:
-
-```text
-[INFO] Processed Pack ID X | Time: Y | TLAST: Z
 ```
-
-Final output: 
-
-```text
-SIMULATION COMPLETE
-
-Items Processed: 17
-
-[PASSED] Full Pipeline is bulletproof!
+.
+├── README.md
+├── rtl/
+│   ├── cdc_arbiter.sv          # Top-level: instantiates all submodules
+│   ├── rr_arbiter.sv           # Round-robin arbiter (synthesizable, no break)
+│   ├── fifo_output_ctrl.sv     # Registered output controller (fixes rd_en hazard)
+│   └── cdc_arbiter_wrap.v      # Verilog wrapper for block design compatibility
+├── sim/
+│   ├── tb_cdc_arbiter.sv       # Self-checking testbench (7 tests)
+│   └── xpm_fifo_async_stub.sv  # Behavioral XPM stub (non-Vivado simulators only)
+└── docs/
+    ├── cdc_arbitrer.png        # Architectural block diagram
+    ├── data_lifecycle.png      # Data lifecycle walkthrough
+    ├── handshake.png           # Waveform — one transaction
+    ├── sim_waveform.png        # Vivado xsim behavioral simulation
+    ├── block_design.png        # Vivado block design
+    ├── floorplan.png           # Implemented device floorplan
+    ├── vitis_main.png          # Vitis bare metal application
+    └── uart_putty.png          # PuTTY UART output on hardware
 ```
 
 ---
 
 ## Parameters
 
-| Parameter    | Description               |
-| ------------ | ------------------------- |
-| NUM_SOURCES  | Number of sensor channels |
-| DATA_WIDTH   | Width of sensor payload   |
-| TS_WIDTH     | Timestamp width           |
-| FIFO_DEPTH   | Async FIFO depth          |
-| PACKET_BEATS | TLAST interval            |
+| Parameter | Default | Description |
+|---|---|---|
+| `NUM_SOURCES` | 4 | Number of AXI4-Stream input sources |
+| `DATA_WIDTH` | 64 | Sensor data width in bits (pad narrower sensors to this) |
+| `TS_WIDTH` | 64 | Timestamp counter width in bits |
+| `FIFO_DEPTH` | 1024 | XPM FIFO depth (must be power of 2) |
+| `PACKET_BEATS` | 256 | Number of beats per DMA packet (`TLAST` period) |
+
+**Heterogeneous sensors:** pad all inputs to `DATA_WIDTH` before driving `s_tdata`. The core treats all sources as equal-width internally.
 
 ---
 
-## Directory Structure
+## Port Reference
 
-```text
-HETEROGENEOUSCDCARBITER/
-│
-├── src/
-│   └── sensor_acquisition_master.sv
-│
-├── tb/
-│   └── tb_sensor_acquisition_top.sv
-│
-└── README.md
+### Write Domain (`wclk`)
+
+| Port | Direction | Width | Description |
+|---|---|---|---|
+| `wclk` | in | 1 | Sensor acquisition clock |
+| `wrst_n` | in | 1 | Active-low synchronous reset |
+| `s_tvalid` | in | `NUM_SOURCES` | Per-source valid |
+| `s_tdata` | in | `NUM_SOURCES × DATA_WIDTH` | Flat packed sensor data bus |
+| `s_tready` | out | `NUM_SOURCES` | Per-source ready (only granted source sees high) |
+
+### Read Domain (`rclk`)
+
+| Port | Direction | Width | Description |
+|---|---|---|---|
+| `rclk` | in | 1 | System / DMA clock |
+| `rrst_n` | in | 1 | Active-low synchronous reset |
+| `m_tvalid` | out | 1 | AXI4-Stream valid |
+| `m_tdata` | out | `DATA_WIDTH` | Sensor payload |
+| `m_tuser` | out | `TS_WIDTH` | Acquisition timestamp |
+| `m_tid` | out | `ID_WIDTH` | Source channel ID |
+| `m_tlast` | out | 1 | Packet boundary (every `PACKET_BEATS` beats) |
+| `m_tready` | in | 1 | Downstream backpressure |
+
+---
+
+## Simulation
+
+### Vivado / xsim (recommended)
+
+Drop `xpm_fifo_async_stub.sv` — Vivado has the real XPM library in scope.
+
+```tcl
+add_files -fileset sim_1 {
+    rtl/rr_arbiter.sv
+    rtl/fifo_output_ctrl.sv
+    rtl/cdc_arbiter.sv
+    sim/tb_cdc_arbiter.sv
+}
+set_property top tb_cdc_arbiter [get_filesets sim_1]
+launch_simulation
+```
+
+### Questa / ModelSim
+
+```bash
+vlog -sv sim/xpm_fifo_async_stub.sv \
+         rtl/rr_arbiter.sv \
+         rtl/fifo_output_ctrl.sv \
+         rtl/cdc_arbiter.sv \
+         sim/tb_cdc_arbiter.sv
+vsim -c tb_cdc_arbiter -do "run -all"
+```
+
+### Test Plan
+
+| Test | Checks |
+|---|---|
+| T1 — Reset sanity | `m_tvalid` stays low during and immediately after reset |
+| T2 — Single-source throughput | Data and `m_tid` pass through CDC FIFO intact |
+| T3 — Round-robin fairness | All sources get grants; max−min count ≤ 1 |
+| T4 — Backpressure | No data lost when `m_tready` deasserted then released |
+| T5 — TLAST boundary | `m_tlast` fires exactly every `PACKET_BEATS` beats |
+| T6 — CDC stress | 2:1 clock-ratio run; no corruption |
+| T7 — Timestamp monotonic | `m_tuser` never decreases across consecutive output beats |
+
+---
+
+## Block Design — Zynq PS/PL Integration
+
+![Block Design](docs/block_design.png)
+
+`cdc_arbiter` is integrated into a Zynq PS/PL block design for Zedboard hardware bring-up. A plain Verilog wrapper (`cdc_arbiter_wrap.v`) is used for block design compatibility since IP Integrator does not support direct SystemVerilog module references.
+
+```
+Block Design: cdc_arbiter_bd
+├── ZYNQ7 Processing System
+│   ├── FCLK_CLK0 (200 MHz) → wclk
+│   ├── FCLK_CLK1 (100 MHz) → rclk
+│   ├── FCLK_RESET0_N → wrst_n, rrst_n
+│   └── M_AXI_GP0_ACLK ← FCLK_CLK0
+├── Processor System Reset
+│   ├── slowest_sync_clk ← FCLK_CLK0
+│   └── ext_reset_in ← FCLK_RESET0_N
+├── cdc_arbiter_wrap_v1_0
+│   ├── s_tvalid ← Constant (4'hF — all sources active)
+│   ├── s_tdata  ← Concat of 4× 64-bit Constants
+│   │   ├── Source 0: 0xAAAAAAAAAAAAAAAA
+│   │   ├── Source 1: 0xBBBBBBBBBBBBBBBB
+│   │   ├── Source 2: 0xCCCCCCCCCCCCCCCC
+│   │   └── Source 3: 0xDDDDDDDDDDDDDDDD
+│   └── m_tready ← Constant (1'b1)
+└── ILA (Integrated Logic Analyzer)
+    ├── clk ← FCLK_CLK1 (read domain)
+    ├── probe0 [0:0]  → m_tvalid
+    ├── probe1 [63:0] → m_tdata
+    ├── probe2 [1:0]  → m_tid
+    ├── probe3 [63:0] → m_tuser
+    ├── probe4 [0:0]  → m_tlast
+    └── probe5 [0:0]  → m_tready
+```
+
+**Wrapper note:** `cdc_arbiter_wrap.v` is a zero-logic Verilog adapter — identical silicon result to instantiating `cdc_arbiter` directly. Vivado flattens it completely during synthesis.
+
+---
+
+## Vitis Bare Metal Bring-up
+
+![Vitis Application](docs/vitis_main.png)
+
+Hardware exported as `.xsa` (includes bitstream) via Tcl:
+
+```tcl
+write_hw_platform -fixed -include_bit -force -file C:/path/to/cdc_arbiter.xsa
+```
+
+Vitis standalone application targeting `ps7_cortexa9_0`. UART confirmed at **115200 baud** via PuTTY.
+
+```c
+#include "xil_printf.h"
+
+int main() {
+    xil_printf("CDC Arbiter Hardware Test\r\n");
+    xil_printf("UART OK\r\n");
+    while(1);
+    return 0;
+}
 ```
 
 ---
 
-## Applications
+## Hardware Verification — Zedboard (xc7z020clg484-1)
 
-Typical deployment targets include:
+**Status: verified on hardware — Vivado 2025.1, June 2026**
 
-* Multi-sensor FPGA acquisition systems
-* Industrial monitoring platforms
-* FPGA-based DAQ systems
-* High-speed telemetry systems
-* Software Defined Radio front ends
-* DMA-driven embedded processing pipelines
+### Implemented Floorplan
+
+![Floorplan](docs/floorplan.png)
+
+PL utilization at ~0.6% LUT, 4× RAMB36 visible in fabric. Zynq PS hard block visible as the large orange rectangle bottom-left. PL logic (teal) concentrated in clock regions X0Y2/X1Y2 with BRAM columns at the boundary.
+
+### UART Output — PuTTY COM3, 115200 baud
+
+![UART PuTTY](docs/uart_putty.png)
+
+### Verification Results
+
+| Check | Method | Result |
+|---|---|---|
+| UART communication | Vitis bare metal + PuTTY 115200 baud | ✅ Pass |
+| Bitstream programs cleanly | Vivado Hardware Manager | ✅ Pass |
+| `m_tvalid` continuously asserted | ILA probe0 | ✅ Pass |
+| `m_tid` cycling 0→1→2→3 | ILA probe2 | ✅ Pass |
+| `m_tdata` cycling A→B→C→D | ILA probe1 | ✅ Pass |
+| `m_tuser` timestamp incrementing | ILA probe3 | ✅ Pass |
+| `m_tlast` every 256 beats | ILA probe4 | ✅ Pass |
+| CDC crossing stable at 2:1 ratio | ILA — no glitches on read domain | ✅ Pass |
+
+ILA trigger: `m_tvalid = 1`, sample depth 1024, rclk domain (100 MHz).
 
 ---
 
-## Future Enhancements
+## Known Limitations / Design Notes
 
-* Weighted round-robin scheduling
-* AXI4-Stream sideband support
-* Dynamic packet sizing
-* CRC insertion
-* Multi-FIFO virtual channels
-* Performance counters
-* Formal proof suite
+- **Timestamp is grant-time** (`current_time` at arbitration), not capture-time. Per-source capture registers (`capture_ts[i]` latched on `s_tvalid` rising edge) are the correct fix and match the architecture diagram — implementation deferred.
+- **`s_tdata` is a flat packed bus** (`NUM_SOURCES × DATA_WIDTH`). Slice via `s_tdata[i*DATA_WIDTH +: DATA_WIDTH]`. Unpacked arrays avoided for Vivado/Synplify portability.
+- **`PACKET_BEATS` counter pauses on FIFO backpressure** — correct behavior, but size FIFO generously (`FIFO_DEPTH ≥ 2 × PACKET_BEATS`) if using fixed-length DMA descriptors.
+- **`xpm_fifo_async_stub.sv` is simulation-only.** Does not model CDC synchronization latency or Gray-code pointer timing. Use Vivado xsim with the real XPM for accurate CDC verification.
 
 ---
+
+## Synthesis Target
+
+Vivado 2025.1, part `xc7z020clg484-1`. XPM macro requires Vivado 2019.1+. For non-Xilinx targets replace `xpm_fifo_async` with an equivalent async FIFO keeping the same `full`/`empty`/`din`/`dout`/`wr_en`/`rd_en` contract.
