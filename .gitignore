@@ -1,0 +1,12 @@
+*.jou
+*.log
+*.str
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.runs/
+*.gen/
+*.xpr
+*.srcs/sources_1/bd/*/ui/
