@@ -1,0 +1,9 @@
+MINERVA
+Copyright 2026 Oshio
+
+Licensed under the Apache License, Version 2.0.
+
+This project targets the SkyWater SKY130 PDK and is built with the
+LibreLane/OpenLane and OpenROAD flows, each licensed under the
+Apache License, Version 2.0. Those tools and the PDK are not
+redistributed here.

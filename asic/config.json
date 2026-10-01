@@ -1,0 +1,32 @@
+{
+  "DESIGN_NAME": "minerva_asic_top",
+  "//": "LibreLane / OpenLane 2 config for the MINERVA P5 hardening run.",
+
+  "VERILOG_FILES": [
+    "dir::../build/asic_sv2v/minerva.v"
+  ],
+  "//verilog": "Single file produced by sv2v. Yosys 0.33-era front ends reject this RTL directly (SV packages and unpacked array parameters); see asic/README.md.",
+
+  "CLOCK_PORT": "clk",
+  "CLOCK_NET": "clk",
+  "//clock": "40 MHz to start. The FPGA ran at 100 MHz, but Sky130 is a different library and the first goal is a clean route, not a record. Tighten once it closes.",
+
+  "//floorplan": "Start utilisation-driven and let the tool size the die. Flop-heavy designs need headroom; raise FP_CORE_UTIL only after a clean route.",
+  "FP_SIZING": "relative",
+  "FP_CORE_UTIL": 35,
+  "PL_TARGET_DENSITY_PCT": 40,
+
+  "//reset": "Active-low async pad reset, synchronised inside minerva_asic_top.",
+  "SYNTH_STRATEGY": "AREA 0",
+
+  "//drc": "Keep the default Sky130 HD standard cell library and signoff corners.",
+  "PDK": "sky130A",
+  "STD_CELL_LIBRARY": "sky130_fd_sc_hd",
+
+  "RUN_HEURISTIC_DIODE_INSERTION": true,
+  "GRT_REPAIR_ANTENNAS": true,
+
+  "//sdc": "base.sdc is replaced so the host port and the async reset are constrained explicitly.",
+  "PNR_SDC_FILE": "dir::constraints.sdc",
+  "SIGNOFF_SDC_FILE": "dir::constraints.sdc"
+}

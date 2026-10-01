@@ -1,0 +1,5 @@
+asic/runs/
+build/
+*.log
+*.vcd
+*.gds

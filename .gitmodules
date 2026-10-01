@@ -1,0 +1,9 @@
+[submodule "phases/p2-pipeline"]
+	path = phases/p2-pipeline
+	url = git@github.com:Jehka/RISCV.git
+[submodule "phases/p3-p4-soc"]
+	path = phases/p3-p4-soc
+	url = git@github.com:Jehka/P4_RISCV.git
+[submodule "phases/p1-cdc-arbiter"]
+	path = phases/p1-cdc-arbiter
+	url = git@github.com:Jehka/hetrogeneousCDCArbitrer.git
