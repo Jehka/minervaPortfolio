@@ -103,7 +103,7 @@ padding words of the third were never initialised. Clearing them proved the cach
 fetches on a write miss and writes back faithfully — no bug, and the test was
 worth running rather than assuming.
 
-Full detail: [docs/P6.md](docs/P6.md)
+Full detail: [docs/P6_sram_integration.md](docs/P6.md)
 
 ---
 
