@@ -31,7 +31,7 @@ SRAM macros and closed the result at 45 MHz.
 | **P2**     | 5-stage RV32I pipeline, hazards and forwarding                                   | Hardware-verified | [RISCV](https://github.com/Jehka/RISCV)                                     |
 | **P3–P4** | L1 cache, DMA, AXI4-Lite crossbar, AXI instruction fetch, fault-injection master | Hardware-verified | [P4_RISCV](https://github.com/Jehka/P4_RISCV)                               |
 | **P5**     | Fault-injection campaigns, RTL→GDS on Sky130                                    | Complete          | this repo —[writeup](docs/P5.md)                                           |
-| **P6**     | SRAM macro integration, floorplan and frequency close                            | Complete          | this repo —[writeup](docs/P6.md)                                           |
+| **P6**     | SRAM macro integration, floorplan and frequency close                            | Complete          | this repo —[writeup](docs/P6_sram_integration.md)                          |
 
 ---
 
@@ -103,7 +103,7 @@ padding words of the third were never initialised. Clearing them proved the cach
 fetches on a write miss and writes back faithfully — no bug, and the test was
 worth running rather than assuming.
 
-Full detail: [docs/P6_sram_integration.md](docs/P6.md)
+Full detail: [docs/P6_sram_integration.md](docs/P6_sram_integration.md)
 
 ---
 
@@ -143,7 +143,7 @@ librelane asic/config_sram.json          # harden the SRAM build
 
 `asic/config.json` still builds the P5 flop-memory variant; omit
 `-DUSE_SRAM_MACROS` for it. Layout images come from
-`scripts/gds_shots.py` — see [docs/P6.md](docs/P6.md) for the invocation, which
+`scripts/gds_shots.py` — see [docs/P6_sram_integration.md](docs/P6_sram_integration.md) for the invocation, which
 needs the PDK's KLayout layer-properties file to render in colour.
 
 Tools: Vivado/Vitis 2025.2 for the FPGA side; sv2v, LibreLane (Yosys, OpenROAD,
@@ -158,7 +158,7 @@ Sky130 implementation at 45 MHz.
 Known limitations are documented rather than hidden: the PDK characterises the
 SRAM macros only at the typical corner, 7,279 transition-time warnings remain
 against real library limits as a deliberate trade against setup slack, and IR
-drop is uncharacterised. See [docs/P6.md](docs/P6.md).
+drop is uncharacterised. See [docs/P6_sram_integration.md](docs/P6_sram_integration.md).
 
 ## License
 
