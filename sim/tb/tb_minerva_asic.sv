@@ -167,7 +167,7 @@ module tb_minerva_asic;
     $display("[%0t] loading input data, clearing results", $time);
     for (int i = 0; i < 8; i++)
       host_write(DMEM_BASE + IN_OFF + i*4, INPUT[i]);
-    for (int i = 0; i < OUT_WORDS; i++)
+    for (int i = 0; i < ((OUT_WORDS + 3) / 4) * 4; i++)
       host_write(DMEM_BASE + OUT_OFF + i*4, 32'h0);
 
     // Read one word back: proves the host path works before the CPU is blamed.

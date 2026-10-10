@@ -42,7 +42,27 @@ module minerva_asic_top #(
     // can hold. 128/64 still fits the P5 campaign workload (65 imem words,
     // 8 input + 10 output data words). Raise these once the flow closes.
     parameter int DMEM_WORDS       = 128,  // 512 B
-    parameter int IMEM_WORDS       = 64    // 256 B
+    parameter int IMEM_WORDS       = 64,   // 256 B
+
+    // Selects the sky130 OpenRAM macros instead of the flop arrays: 2 KB dmem
+    // (sky130_sram_2kbyte_1rw1r_32x512_8) and 1 KB imem
+    // (sky130_sram_1kbyte_1rw1r_32x256_8). DMEM_WORDS/IMEM_WORDS are ignored
+    // when it is set -- macro depth is fixed by which macro is instantiated.
+    //
+    // Both builds are kept because they are not interchangeable: the macros
+    // ship with a TT liberty only, so an SRAM build carries typical-corner
+    // macro timing at every corner, while the flop build is characterised
+    // properly at all nine.
+    //
+    // The default comes from a preprocessor define because the ASIC flow runs
+    // the source through sv2v, which takes -D but has no way to override a
+    // parameter. `sv2v -DUSE_SRAM_MACROS ...` selects the macro build; the
+    // parameter stays overridable for simulation.
+`ifdef USE_SRAM_MACROS
+    parameter bit USE_SRAM = 1'b1
+`else
+    parameter bit USE_SRAM = 1'b0
+`endif
 )(
     input  logic        clk,
     input  logic        rst_n_pad,       // async assert, synchronised below
@@ -208,26 +228,61 @@ module minerva_asic_top #(
   );
 
   // ------------------------------------------------------------ memories ---
-  // Same RTL as the simulation memory model. On the FPGA these were AXI BRAM
-  // controllers outside the boundary; here they are flop arrays inside it.
-  axi4lite_mem_model #(.MEM_WORDS(DMEM_WORDS)) u_dmem (
-      .clk (clk), .rst_n (rst_n),
-      .s_axi_awaddr (s_awaddr[0]), .s_axi_awvalid(s_awvalid[0]), .s_axi_awready(s_awready[0]),
-      .s_axi_wdata  (s_wdata[0]),  .s_axi_wstrb  (s_wstrb[0]),   .s_axi_wvalid (s_wvalid[0]),
-      .s_axi_wready (s_wready[0]), .s_axi_bresp  (s_bresp[0]),   .s_axi_bvalid (s_bvalid[0]),
-      .s_axi_bready (s_bready[0]), .s_axi_araddr (s_araddr[0]),  .s_axi_arvalid(s_arvalid[0]),
-      .s_axi_arready(s_arready[0]),.s_axi_rdata  (s_rdata[0]),   .s_axi_rresp  (s_rresp[0]),
-      .s_axi_rvalid (s_rvalid[0]), .s_axi_rready (s_rready[0])
-  );
+  // Two implementations of the same two AXI4-Lite slaves. The port lists are
+  // identical, so nothing else in this file changes between them.
+  //
+  //   flop arrays  -- portable, no macro timing needed, signs off at all nine
+  //                   corners, but the read mux tree dominates the cell count
+  //                   and the depth has to stay small to route in sensible time.
+  //   SRAM macros  -- 4x and 8x the depth for less area, a real hard block to
+  //                   place and power, and a registered read port that
+  //                   axi4lite_sram absorbs. TT-corner liberty only.
+  generate
+    if (USE_SRAM) begin : g_mem_sram
 
-  axi4lite_mem_model #(.MEM_WORDS(IMEM_WORDS)) u_imem (
-      .clk (clk), .rst_n (rst_n),
-      .s_axi_awaddr (s_awaddr[3]), .s_axi_awvalid(s_awvalid[3]), .s_axi_awready(s_awready[3]),
-      .s_axi_wdata  (s_wdata[3]),  .s_axi_wstrb  (s_wstrb[3]),   .s_axi_wvalid (s_wvalid[3]),
-      .s_axi_wready (s_wready[3]), .s_axi_bresp  (s_bresp[3]),   .s_axi_bvalid (s_bvalid[3]),
-      .s_axi_bready (s_bready[3]), .s_axi_araddr (s_araddr[3]),  .s_axi_arvalid(s_arvalid[3]),
-      .s_axi_arready(s_arready[3]),.s_axi_rdata  (s_rdata[3]),   .s_axi_rresp  (s_rresp[3]),
-      .s_axi_rvalid (s_rvalid[3]), .s_axi_rready (s_rready[3])
-  );
+      axi4lite_sram #(.ADDR_WIDTH(9)) u_dmem (        // 512 words, 2 KB
+          .clk (clk), .rst_n (rst_n),
+          .s_axi_awaddr (s_awaddr[0]), .s_axi_awvalid(s_awvalid[0]), .s_axi_awready(s_awready[0]),
+          .s_axi_wdata  (s_wdata[0]),  .s_axi_wstrb  (s_wstrb[0]),   .s_axi_wvalid (s_wvalid[0]),
+          .s_axi_wready (s_wready[0]), .s_axi_bresp  (s_bresp[0]),   .s_axi_bvalid (s_bvalid[0]),
+          .s_axi_bready (s_bready[0]), .s_axi_araddr (s_araddr[0]),  .s_axi_arvalid(s_arvalid[0]),
+          .s_axi_arready(s_arready[0]),.s_axi_rdata  (s_rdata[0]),   .s_axi_rresp  (s_rresp[0]),
+          .s_axi_rvalid (s_rvalid[0]), .s_axi_rready (s_rready[0])
+      );
+
+      axi4lite_sram #(.ADDR_WIDTH(8)) u_imem (        // 256 words, 1 KB
+          .clk (clk), .rst_n (rst_n),
+          .s_axi_awaddr (s_awaddr[3]), .s_axi_awvalid(s_awvalid[3]), .s_axi_awready(s_awready[3]),
+          .s_axi_wdata  (s_wdata[3]),  .s_axi_wstrb  (s_wstrb[3]),   .s_axi_wvalid (s_wvalid[3]),
+          .s_axi_wready (s_wready[3]), .s_axi_bresp  (s_bresp[3]),   .s_axi_bvalid (s_bvalid[3]),
+          .s_axi_bready (s_bready[3]), .s_axi_araddr (s_araddr[3]),  .s_axi_arvalid(s_arvalid[3]),
+          .s_axi_arready(s_arready[3]),.s_axi_rdata  (s_rdata[3]),   .s_axi_rresp  (s_rresp[3]),
+          .s_axi_rvalid (s_rvalid[3]), .s_axi_rready (s_rready[3])
+      );
+
+    end else begin : g_mem_flops
+
+      axi4lite_mem_model #(.MEM_WORDS(DMEM_WORDS)) u_dmem (
+          .clk (clk), .rst_n (rst_n),
+          .s_axi_awaddr (s_awaddr[0]), .s_axi_awvalid(s_awvalid[0]), .s_axi_awready(s_awready[0]),
+          .s_axi_wdata  (s_wdata[0]),  .s_axi_wstrb  (s_wstrb[0]),   .s_axi_wvalid (s_wvalid[0]),
+          .s_axi_wready (s_wready[0]), .s_axi_bresp  (s_bresp[0]),   .s_axi_bvalid (s_bvalid[0]),
+          .s_axi_bready (s_bready[0]), .s_axi_araddr (s_araddr[0]),  .s_axi_arvalid(s_arvalid[0]),
+          .s_axi_arready(s_arready[0]),.s_axi_rdata  (s_rdata[0]),   .s_axi_rresp  (s_rresp[0]),
+          .s_axi_rvalid (s_rvalid[0]), .s_axi_rready (s_rready[0])
+      );
+
+      axi4lite_mem_model #(.MEM_WORDS(IMEM_WORDS)) u_imem (
+          .clk (clk), .rst_n (rst_n),
+          .s_axi_awaddr (s_awaddr[3]), .s_axi_awvalid(s_awvalid[3]), .s_axi_awready(s_awready[3]),
+          .s_axi_wdata  (s_wdata[3]),  .s_axi_wstrb  (s_wstrb[3]),   .s_axi_wvalid (s_wvalid[3]),
+          .s_axi_wready (s_wready[3]), .s_axi_bresp  (s_bresp[3]),   .s_axi_bvalid (s_bvalid[3]),
+          .s_axi_bready (s_bready[3]), .s_axi_araddr (s_araddr[3]),  .s_axi_arvalid(s_arvalid[3]),
+          .s_axi_arready(s_arready[3]),.s_axi_rdata  (s_rdata[3]),   .s_axi_rresp  (s_rresp[3]),
+          .s_axi_rvalid (s_rvalid[3]), .s_axi_rready (s_rready[3])
+      );
+
+    end
+  endgenerate
 
 endmodule

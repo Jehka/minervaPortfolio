@@ -1,0 +1,102 @@
+{
+  "DESIGN_NAME": "minerva_asic_top",
+  "//": "MINERVA P5b -- same RTL hardened with sky130 OpenRAM macros in place of the flop-array memories. Kept separate from config.json so the nine-corner flop build stays reproducible.",
+  "VERILOG_FILES": [
+    "dir::../build/asic_sv2v/minerva_sram.v"
+  ],
+  "//verilog": "Produced by sv2v WITH -DUSE_SRAM_MACROS, which is what selects the macro branch in minerva_asic_top. Without that define you get the flop build under a config that expects macros, and synthesis will simply never instantiate them.",
+  "CLOCK_PORT": "clk",
+  "CLOCK_NET": "clk",
+  "CLOCK_PERIOD": 22,
+  "//clock": "Unchanged from the flop build's closing run so this is a one-variable experiment. The period actually comes from constraints.sdc; this is here for steps that read it directly.",
+  "PDK": "sky130A",
+  "STD_CELL_LIBRARY": "sky130_fd_sc_hd",
+  "//macros": "lib uses the '*' corner wildcard because the PDK ships ONE liberty per macro, TT 1.8V 25C. There is no SS or FF characterisation. The wildcard applies typical macro timing at every corner, so the design still runs all nine, but slow-corner slack is optimistic by whatever the macro contributes to a path. State that in the writeup rather than reporting nine clean corners as if the macro were characterised.",
+  "MACROS": {
+    "sky130_sram_2kbyte_1rw1r_32x512_8": {
+      "gds": [
+        "pdk_dir::libs.ref/sky130_sram_macros/gds/sky130_sram_2kbyte_1rw1r_32x512_8.gds"
+      ],
+      "lef": [
+        "pdk_dir::libs.ref/sky130_sram_macros/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef"
+      ],
+      "lib": {
+        "*": [
+          "pdk_dir::libs.ref/sky130_sram_macros/lib/sky130_sram_2kbyte_1rw1r_32x512_8_TT_1p8V_25C.lib"
+        ]
+      },
+      "instances": {
+        "g_mem_sram.u_dmem.g_sram_2kb.u_sram": {
+          "location": [
+            67.56,
+            70.0
+          ],
+          "orientation": "N"
+        }
+      }
+    },
+    "sky130_sram_1kbyte_1rw1r_32x256_8": {
+      "gds": [
+        "pdk_dir::libs.ref/sky130_sram_macros/gds/sky130_sram_1kbyte_1rw1r_32x256_8.gds"
+      ],
+      "lef": [
+        "pdk_dir::libs.ref/sky130_sram_macros/lef/sky130_sram_1kbyte_1rw1r_32x256_8.lef"
+      ],
+      "lib": {
+        "*": [
+          "pdk_dir::libs.ref/sky130_sram_macros/lib/sky130_sram_1kbyte_1rw1r_32x256_8_TT_1p8V_25C.lib"
+        ]
+      },
+      "instances": {
+        "g_mem_sram.u_imem.g_sram_1kb.u_sram": {
+          "location": [
+            852.66,
+            70.0
+          ],
+          "orientation": "N"
+        }
+      }
+    }
+  },
+  "//blackbox": "Points at a local blackbox declaration, NOT the PDK's behavioural models. Three tools read this variable and want different things: Verilator's lint needs a module declaration or it errors 'Cannot find file containing module'; OpenSTA only parses gate-level netlists and chokes on the PDK model's parameter declarations ('line 20, syntax error'); Yosys needs the macro treated as a hard block. The stub's '/// sta-blackbox' first line and (* blackbox *) attribute satisfy all three. It is a .v so the rtl/asic/*.sv glob skips it -- sv2v would regenerate the file and drop the sta-blackbox comment. Simulation uses the PDK's real models instead; see scripts/gate_sim.sh.",
+  "EXTRA_VERILOG_MODELS": [
+    "dir::../rtl/asic/sky130_sram_blackbox.v"
+  ],
+  "//pdn": "The macros have their own vccd1/vssd1 power pins, which are NOT connected by the standard-cell grid. Without these entries the macros are placed and routed but unpowered, and the failure surfaces at LVS -- i.e. after a full run. Format is `<instance_name_rx> <vdd_net> <gnd_net> <vdd_pin> <gnd_pin>`; the nets are VPWR/VGND because VDD_NETS/GND_NETS are unset and fall back to VDD_PIN/GND_PIN. Instance paths confirmed against the synthesised netlist, not guessed.",
+  "PDN_MACRO_CONNECTIONS": [
+    "g_mem_sram\\.u_dmem\\.g_sram_2kb\\.u_sram VPWR VGND vccd1 vssd1",
+    "g_mem_sram\\.u_imem\\.g_sram_1kb\\.u_sram VPWR VGND vccd1 vssd1"
+  ],
+  "//floorplan": "Die shrunk 1600->1400 and target density 40->45 after P6 showed 21.8% standard-cell utilisation. The old die was sized for the flop build; replacing flop memory with SRAM macros deleted most of the standard cell content and the die was never revisited. The clustered placement was caused by the density target (40) exceeding the natural density (~27%) -- the placer packed to 40% in part of the core and left the rest as fill. Macro coordinates are recomputed for the smaller die; the old ones put the 1kB macro 20 um from the new die edge.",
+  "FP_SIZING": "absolute",
+  "DIE_AREA": [
+    0,
+    0,
+    1400,
+    1400
+  ],
+  "PL_TARGET_DENSITY_PCT": 45,
+  "//halo": "Macro halos raised from the 10 um default. Global routing failed with GRT-0116 at a total overflow of just 46 out of 1.37M resources -- 16.6% overall usage, nothing above 23% on any layer -- so this was never a congested design, just a handful of single-track pinch points. The macro pins are on met4 and the macro blocks met1-met4 inside its footprint, so cells placed 10 um from the edge leave almost no room to turn into those pins. 30 um gives the router somewhere to land.",
+  "FP_MACRO_HORIZONTAL_HALO": 30,
+  "FP_MACRO_VERTICAL_HALO": 30,
+  "PDN_HORIZONTAL_HALO": 20,
+  "PDN_VERTICAL_HALO": 20,
+  "//routing": "GRT_ADJUSTMENT derates every routing edge before the router starts; the 0.3 default throws away 30% of capacity as a safety margin. This design uses 17% of its routing resources, so that margin buys nothing and is the difference between routable and not. Lowered to 0.2.\n\nGRT_ALLOW_CONGESTION is the safety net, not the fix. GRT-0116 fails on ANY non-zero overflow: after raising the macro halos, total overflow fell from 46 GCells to 2 -- two single-track pinch points in 1.38M resources -- and that still aborted the run. Detailed routing resolves overflow of that scale routinely. DRC and LVS at the end of the flow remain the real gate: if detailed routing genuinely cannot route these, it shows up there as errors rather than being silently accepted.",
+  "GRT_ADJUSTMENT": 0.2,
+  "GRT_ALLOW_CONGESTION": true,
+  "SYNTH_STRATEGY": "AREA 0",
+  "RUN_HEURISTIC_DIODE_INSERTION": true,
+  "GRT_REPAIR_ANTENNAS": true,
+  "//hold": "Hold closure needs margin, not a longer clock: hold is period-independent, so the 31 ns period below does nothing for it. The failing path is a single one at max_ss (-0.124 ns). Note the direction -- hold failing at the SLOW corner and passing at ff is backwards for a normal design, and is the fingerprint of the TT-only macro liberty: the macro is modelled typical while the clock tree is modelled slow, so macro data arrives early against a late clock. Buffering it closed is legitimate; nine-corner closure for any path through these macros is still approximate, because the PDK ships no SS or FF characterisation for them.",
+  "PL_RESIZER_HOLD_SLACK_MARGIN": 0.25,
+  "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.25,
+  "PNR_SDC_FILE": "dir::constraints.sdc",
+  "SIGNOFF_SDC_FILE": "dir::constraints.sdc",
+  "//drc": "The two SRAM macros are read as pre-processed abstract views so Magic's DRC does not descend into them. This is required, not cosmetic: sky130's SRAM bitcells are drawn to a special set of design rules, and the shipped Magic deck does not contain those rules, so checking the vendor GDS against the logic deck reports 8,405,430 violations that are false by construction (1,134,648 for the 1 KB macro in complete isolation, with no design around it). Upstream guidance is MAGIC_DRC_USE_GDS=false; this is deliberately stronger, because 'false' builds the layout from DEF and abstracts EVERYTHING, losing the real GDS check on our own cells and routing. With the maglefs loaded first, 'gds noduplicates' skips exactly these two cells and everything the flow generated is still checked from the merged GDS -- including the one genuine failure mode here, PDN straps landing too close to a macro's met4, which the halo settings above avoid. Result: magic__drc_error__count = 0.",
+  "MAGIC_DRC_MAGLEFS": [
+    "pdk_dir::libs.ref/sky130_sram_macros/maglef/sky130_sram_2kbyte_1rw1r_32x512_8.mag",
+    "pdk_dir::libs.ref/sky130_sram_macros/maglef/sky130_sram_1kbyte_1rw1r_32x256_8.mag"
+  ],
+  "//streamout": "Magic's GDS merge leaves the macros' internal subcells unparented, so the stream has multiple top cells and both KLayout Render and the KLayout DRC deck abort before doing any work -- which left this build with a Magic verdict only, where the flop build had both tools agreeing. Streaming out with KLayout instead produces a single-top GDS and unblocks both.",
+  "PRIMARY_GDSII_STREAMOUT_TOOL": "klayout"
+}
